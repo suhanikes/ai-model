@@ -236,9 +236,8 @@ export function recolorGarmentOKLCH(
   const targetLightness = clamp(targetLCH.L, 0, 1);
   const isVeryDarkTarget = targetLightness < 0.12; // Prevent "black becoming grey/white"
   const sourceMeanLCH = computeMaskedMeanLCH(srcData, mask, pixelCount);
-  const isDarkGarment = sourceMeanLCH.L < DARK_GARMENT_MEAN_L_THRESHOLD;
   const isNearNeutralDarkGarment =
-    isDarkGarment && sourceMeanLCH.C < NEAR_NEUTRAL_DARK_MEAN_C_THRESHOLD;
+    sourceMeanLCH.C < NEAR_NEUTRAL_DARK_MEAN_C_THRESHOLD;
 
   const out = new Uint8ClampedArray(srcData.length);
 
@@ -263,65 +262,32 @@ export function recolorGarmentOKLCH(
     }
 
     const lch = rgbToOKLCH({ r, g, b });
-    if (isDarkGarment) {
-      // Dark-garment-only path: preserve local texture via relative transforms.
-      const deltaL = lch.L - sourceMeanLCH.L;
-      lch.L = clamp(targetLightness + deltaL, 0, 1);
+    // Unified recolor path for all garments: previously dark-garment-only logic.
+    // Preserve local texture via relative transforms.
+    const deltaL = lch.L - sourceMeanLCH.L;
+    lch.L = clamp(targetLightness + deltaL, 0, 1);
 
-      if (isNearNeutralDarkGarment) {
-        // Black/near-black garments have unreliable per-pixel chroma+hue.
-        // Keep hue uniform and modulate chroma only slightly by lightness
-        // contrast to preserve folds without introducing color noise.
-        const lContrastFactor = clamp(
-          1 + (lch.L - targetLightness) * 0.8,
-          0.75,
-          1.25,
-        );
-        lch.C = clamp(targetChroma * lContrastFactor, 0, 0.4);
-      } else {
-        // For dark but chromatic garments, keep a bounded chroma ratio so
-        // textures are preserved without ratio explosions (color speckles).
-        const safeMeanC = sourceMeanLCH.C > 1e-6 ? sourceMeanLCH.C : 1e-6;
-        const chromaRatio = clamp(lch.C / safeMeanC, 0.55, 1.45);
-        lch.C = clamp(Math.max(0, targetChroma * chromaRatio), 0, 0.4);
-      }
-
-      // Force stable target hue across dark garments to avoid random green/yellow patches.
-      // Hue from near-achromatic pixels is unstable and causes rainbow artifacts.
-      lch.h = targetHue;
+    if (isNearNeutralDarkGarment) {
+      // Near-neutral garments have unreliable per-pixel chroma/hue.
+      // Keep hue uniform and modulate chroma mildly by local lightness contrast.
+      const lContrastFactor = clamp(
+        1 + (lch.L - targetLightness) * 0.8,
+        0.75,
+        1.25,
+      );
+      lch.C = clamp(targetChroma * lContrastFactor, 0, 0.4);
     } else {
-      // Keep existing light/medium behavior unchanged.
+      // Chromatic garments: bounded chroma ratio keeps texture without noise.
+      const safeMeanC = sourceMeanLCH.C > 1e-6 ? sourceMeanLCH.C : 1e-6;
+      const chromaRatio = clamp(lch.C / safeMeanC, 0.55, 1.45);
+      lch.C = clamp(Math.max(0, targetChroma * chromaRatio), 0, 0.4);
+    }
+
+    // Force stable target hue to avoid per-pixel hue noise artifacts.
+    // Hue from near-achromatic pixels is unstable.
+    lch.h = targetHue;
+    if (lch.C < MIN_CHROMA_FOR_HUE) {
       lch.h = targetHue;
-
-      if (lch.L < 0.35) {
-        // If user selects a very dark target, don't lift shadows up.
-        if (isVeryDarkTarget) {
-          lch.L = lch.L * 0.98;
-          lch.C = lch.C * 0.98;
-        } else {
-          lch.L = lch.L * 1.2;
-          lch.C = lch.C * 1.3;
-        }
-      }
-
-      const dominance = computeDominanceScores(lch);
-
-      // Ensure slider responsiveness:
-      // - Always nudge L towards targetLightness (small, but non-zero)
-      // - Always nudge C towards targetChroma (small, but non-zero)
-      // - Use dominance to slightly increase strength when that dimension "matters most"
-      const lBlend = dominance.primary === "L" ? 0.18 : 0.06;
-      const cBlend = dominance.primary === "C" ? 0.18 : 0.06;
-
-      lch.L = lch.L * (1 - lBlend) + targetLightness * lBlend;
-      lch.C = lch.C * (1 - cBlend) + targetChroma * cBlend;
-
-      // Keep the original texture-friendly behavior: hue is replaced, but L/C are constrained.
-      lch.L = clamp(lch.L, 0, 1);
-      lch.C = clamp(lch.C, 0, 0.4);
-
-      // Additional stabilizer: don't overshoot chroma beyond the target.
-      lch.C = Math.min(lch.C * 1.05, targetChroma);
     }
 
     const newRGB = oklchToRGB(lch);

@@ -52,6 +52,13 @@ const upload = multer({
   limits: {
     fileSize: 10 * 1024 * 1024,
   },
+  fileFilter: (_req, file, cb) => {
+    const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
+    if (!allowed.has(file.mimetype)) {
+      return cb(new Error("Unsupported file type. Please upload JPEG, PNG, or WebP."));
+    }
+    cb(null, true);
+  },
 });
 
 const imageRegistry = new Map();
@@ -253,6 +260,17 @@ app.post("/api/lasso-segmentation", async (req, res) => {
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "node-backend" });
+});
+
+app.use((err, _req, res, _next) => {
+  if (err?.message?.includes("Unsupported file type")) {
+    return res.status(400).json({ error: err.message });
+  }
+  if (err?.code === "LIMIT_FILE_SIZE") {
+    return res.status(400).json({ error: "File too large. Max allowed size is 10MB." });
+  }
+  console.error("Unhandled server error:", err);
+  return res.status(500).json({ error: "Internal server error" });
 });
 
 app.listen(PORT, () => {

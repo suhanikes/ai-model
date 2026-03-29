@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from starlette.formparsers import MultiPartParser
 
 from services.mask_processing import build_final_garment_mask_from_segmentation
@@ -58,10 +58,21 @@ def load_image_from_upload(upload: UploadFile) -> tuple[np.ndarray, float]:
     if not data:
         raise HTTPException(status_code=400, detail="Uploaded image is empty")
     upload.file.seek(0)
-    pil = Image.open(io.BytesIO(data)).convert("RGB")
-    img = np.array(pil)
-    img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    return img_bgr, 1.0
+    try:
+        pil = Image.open(io.BytesIO(data)).convert("RGB")
+        img = np.array(pil)
+        img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        return img_bgr, 1.0
+    except UnidentifiedImageError:
+        # Fallback decoder: some valid images can fail in PIL depending on codec/container.
+        arr = np.frombuffer(data, dtype=np.uint8)
+        img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img_bgr is not None:
+            return img_bgr, 1.0
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported or corrupted image file. Please upload PNG/JPEG/WebP.",
+        )
 
 
 def encode_mask_preview(mask: np.ndarray) -> str:
